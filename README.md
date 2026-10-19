@@ -1,4 +1,20 @@
-
+> [!NOTE]
+> **This is a fork of [cifertech/nRFBox](https://github.com/cifertech/nRFBox).**
+> nRFBox — the hardware design, PCB, schematic and original firmware — is the work of
+> **[CiferTech](https://github.com/cifertech)** ([cifertech.net](https://cifertech.net/)) and is released under the MIT License
+> ([LICENCE](LICENCE), © 2022 CiferTech). All credit for the project goes to them; please star and support the
+> [original repository](https://github.com/cifertech/nRFBox).
+>
+> What this fork changes, on top of upstream v2.7.2 (`nRFBox/`):
+> - **v3.0.0 firmware** — 4-button UI (UP / DOWN / OK / BACK), two nRF24 modules on separate HSPI / VSPI buses,
+>   reworked pinout (see [`nRFBox/config.h`](nRFBox/config.h)). Not pin-compatible with a stock v2 board.
+> - **NRF-sniff** ([`nRFBox/sniffer/`](nRFBox/sniffer/)) — nRF52840 sniffer firmware, Wireshark extcap and Lua
+>   dissector for nRF24 / Enhanced ShockBurst traffic. Built on the
+>   [Adafruit nRF52 Arduino core](https://github.com/adafruit/Adafruit_nRF52_Arduino); the merged `.hex` contains
+>   Nordic Semiconductor's S140 SoftDevice, under Nordic's own licence. Promiscuous mode uses Travis Goodspeed's nRF24
+>   preamble-matching trick, as also used in Bastille's MouseJack research.
+>
+> Everything below is the upstream README.
 
 <div align="center">
 
