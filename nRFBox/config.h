@@ -9,24 +9,52 @@
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 
-// Push Buttons-specific Pins
-#define BUTTON_UP_PIN       26 
-#define BUTTON_SELECT_PIN   33
-#define BUTTON_DOWN_PIN     32 
-#define BTN_PIN_RIGHT       27
-#define BTN_PIN_LEFT        25
+// OLED-specific Pins (I2C)
+// Moved off the default 21/22 pair: those are now nRF24 #2 CSN/CE.
+#define OLED_SDA_PIN         4
+#define OLED_SCL_PIN        17
 
-// SD Card Slot-specific Pins
+// Push Buttons-specific Pins (4-button layout: UP / DOWN / OK / BACK)
+// GPIO 27 used to be the d-pad RIGHT button and is now spare.
+#define BUTTON_UP_PIN       26
+#define BUTTON_DOWN_PIN     25
+#define BUTTON_OK_PIN       33
+#define BUTTON_BACK_PIN     32
+
+// NeoPixel-specific Pin
+// Moved off GPIO 14: that is now the HSPI clock.
+#define NEOPIXEL_PIN         2
+
+// SD Card Slot-specific Pins (shares the VSPI bus with nRF24 #2)
 #define SD_CS_PIN 5
 #define FIRMWARE_FILE "/firmware.bin"
 
-// nRF24-specific Pins
-#define NRF_CE_PIN_A    5   
-#define NRF_CSN_PIN_A   17 
-#define NRF_CE_PIN_B    16  
-#define NRF_CSN_PIN_B   4  
-#define NRF_CE_PIN_C    15  
-#define NRF_CSN_PIN_C   2  
+// nRF24 module #1 -> HSPI
+#define NRF_CE_PIN_A    16
+#define NRF_CSN_PIN_A   15
+#define NRF_SCK_PIN_A   14
+#define NRF_MOSI_PIN_A  13
+#define NRF_MISO_PIN_A  12
+
+// nRF24 module #2 -> VSPI
+#define NRF_CE_PIN_B    22
+#define NRF_CSN_PIN_B   21
+#define NRF_SCK_PIN_B   18
+#define NRF_MOSI_PIN_B  23
+#define NRF_MISO_PIN_B  19
+
+// Spare pin freed by dropping the 5th button. Wire the 3rd module's CE here
+// (and CSN to GPIO 0) if you ever populate it.
+#define SPARE_GPIO          27
+
+// nRF24 module #3 -> not part of this two-module layout.
+// The two SPI buses, the OLED, the 5 buttons, the NeoPixel and the SD CS use
+// every output-capable GPIO this chip has left, so RadioC is parked on two
+// input-only pins (34/35 cannot drive a line). The code below still builds and
+// still calls RadioC; begin() simply returns false and it reports "Inactive",
+// exactly as it does today when no third module is plugged in.
+#define NRF_CE_PIN_C    34
+#define NRF_CSN_PIN_C   35
 
 // Common dependencies
 #include "setting.h"
@@ -42,9 +70,9 @@
 #include <SD.h>
 #include <Update.h>
 
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-
-Adafruit_NeoPixel pixels(1, 14, NEO_GRB + NEO_KHZ800);
+// u8g2 and pixels are DEFINED once in setting.cpp and only declared here.
+// This header is included by six translation units, so defining them here
+// would multiply-define them at link time.
 
 // BLE-specific dependencies
 #include <BLEDevice.h>

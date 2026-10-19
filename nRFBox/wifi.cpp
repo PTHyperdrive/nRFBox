@@ -15,22 +15,22 @@ unsigned long scan_StartTime = 0;
 const unsigned long scanTimeout = 2000;
 bool isScanComplete = false;
 
-unsigned long lastButtonPress = 0;
-unsigned long debounceTime = 200;
-
 void wifiscanSetup() {
   Serial.begin(115200);
   u8g2.setFont(u8g2_font_6x10_tr);
-  
+
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
-  
-  pinMode(BUTTON_UP_PIN, INPUT_PULLUP);
-  pinMode(BUTTON_DOWN_PIN, INPUT_PULLUP);
-  pinMode(BTN_PIN_RIGHT, INPUT_PULLUP);
-  pinMode(BTN_PIN_LEFT, INPUT_PULLUP);
-  
-  for (int cycle = 0; cycle < 3; cycle++) { 
+
+  uiButtonsBegin();
+
+  currentIndex = 0;
+  listStartIndex = 0;
+  isDetailView = false;
+  isScanComplete = false;
+
+
+  for (int cycle = 0; cycle < 1; cycle++) { 
     for (int i = 0; i < 3; i++) {
       u8g2.clearBuffer();
       u8g2.setFont(u8g2_font_6x10_tr);
@@ -46,7 +46,7 @@ void wifiscanSetup() {
       u8g2.drawStr(80, 10, dots.c_str()); 
 
       u8g2.sendBuffer();
-      delay(300); 
+      delay(60); 
     }
   }
   
@@ -64,28 +64,41 @@ void wifiscanLoop() {
     }
   }
 
-  if (currentMillis - lastButtonPress > debounceTime) {
-    if (digitalRead(BUTTON_UP_PIN) == LOW) {
-      if (currentIndex > 0) {
+  // In the list: UP/DOWN scroll, OK opens details, BACK leaves the tool.
+  // In the details: BACK (or OK) returns to the list.
+  switch (uiRead()) {
+    case BTN_UP:
+      if (!isDetailView && currentIndex > 0) {
         currentIndex--;
         if (currentIndex < listStartIndex) {
           listStartIndex--;
         }
       }
-      lastButtonPress = currentMillis;
-    } else if (digitalRead(BUTTON_DOWN_PIN) == LOW) {
-      if (currentIndex < WiFi.scanComplete() - 1) {
+      break;
+    case BTN_DOWN:
+      if (!isDetailView && currentIndex < WiFi.scanComplete() - 1) {
         currentIndex++;
-        if (currentIndex >= listStartIndex + 5) {
+        if (currentIndex >= listStartIndex + uiVisibleRows()) {
           listStartIndex++;
         }
       }
-      lastButtonPress = currentMillis;
-    } else if (digitalRead(BTN_PIN_RIGHT) == LOW) {
-      isDetailView = true;
-      lastButtonPress = currentMillis;
-    }
+      break;
+    case BTN_OK:
+      if (!isDetailView) {
+        if (WiFi.scanComplete() > 0) isDetailView = true;
+      } else {
+        isDetailView = false;
+      }
+      break;
+    case BTN_BACK:
+      if (isDetailView) isDetailView = false;
+      else              uiRequestExit();
+      break;
+    default:
+      break;
   }
+
+  if (uiExitRequested()) return;
 
   if (!isDetailView && isScanComplete) {
     u8g2.clearBuffer();
@@ -93,7 +106,8 @@ void wifiscanLoop() {
     u8g2.drawStr(0, 10, "Wi-Fi Networks:");
 
     int networkCount = WiFi.scanComplete();
-    for (int i = 0; i < 5; i++) {
+    int rows = uiVisibleRows();
+    for (int i = 0; i < rows; i++) {
       int currentNetworkIndex = i + listStartIndex;
       if (currentNetworkIndex >= networkCount) break;
 
@@ -110,6 +124,7 @@ void wifiscanLoop() {
       u8g2.drawStr(10, 23 + i * 10, networkInfo.c_str());
       u8g2.drawStr(50, 23 + i * 10, networkrssi.c_str());
     }
+    uiDrawHint("UP/DN scroll  OK details  BACK exit");
     u8g2.sendBuffer();
   }
 
@@ -133,20 +148,16 @@ void wifiscanLoop() {
     u8g2.drawStr(0, 30, bssid.c_str());
     u8g2.drawStr(0, 40, signal.c_str());
     u8g2.drawStr(0, 50, ch.c_str());
-    u8g2.drawStr(0, 60, "Press LEFT to go back");
+    uiDrawHint("BACK: network list");
     u8g2.sendBuffer();
-
-    if (digitalRead(BTN_PIN_LEFT) == LOW) {
-      isDetailView = false;
-      lastButtonPress = currentMillis;
-      }
     }
   }
 }
 
 namespace Deauther {
 
-const int networks_per_page = 5;
+// Replaced by uiVisibleRows(); kept only as the scroll-page maximum.
+#define networks_per_page (uiVisibleRows())
 int currentIndex = 0;
 int listStartIndex = 0;
 bool isDetailView = false;
@@ -154,10 +165,6 @@ unsigned long scan_StartTime = 0;
 const unsigned long scanTimeout = 2000;
 bool isScanComplete = false;
 
-unsigned long lastButtonPress = 0;
-unsigned long lastRightButtonPress = 0; 
-const unsigned long debounceTime = 200; 
-const unsigned long rightDebounceTime = 50; 
 
 uint8_t deauth_frame_default[26] = {
     0xC0, 0x00,                         // type, subtype c0: deauth
@@ -182,9 +189,8 @@ bool scanning = false;
 uint32_t last_packet_time = 0;
 String lastNeoPixelColour = "0"; 
 
-extern "C" int ieee80211_raw_frame_sanity_check(int32_t arg, int32_t arg2, int32_t arg3) {
-    return 0;
-}
+// esp32 core 3.x already ships a permissive ieee80211_raw_frame_sanity_check
+// in libnet80211.a; redefining it here collides at link time.
 
 void wsl_bypasser_send_raw_frame(const uint8_t *frame_buffer, int size) {
     esp_err_t res = esp_wifi_80211_tx(WIFI_IF_AP, frame_buffer, size, false);
@@ -220,7 +226,7 @@ void drawScanScreen() {
     if (scanning) {
 
     u8g2.setFont(u8g2_font_6x10_tr);
-    for (int cycle = 0; cycle < 3; cycle++) {
+    for (int cycle = 0; cycle < 1; cycle++) {
         for (int i = 0; i < 3; i++) {
             u8g2.clearBuffer();
             u8g2.drawStr(0, 10, "Scanning WiFi");
@@ -232,7 +238,7 @@ void drawScanScreen() {
             u8g2.drawStr(80, 10, dots.c_str());
             setNeoPixelColour("white");
             u8g2.sendBuffer();
-            delay(300);
+            delay(60);
         }
     }
         if (lastNeoPixelColour != "white") {
@@ -263,6 +269,7 @@ void drawScanScreen() {
             u8g2.drawStr(10, 23 + i * 10, networkInfo.c_str());
             u8g2.drawStr(50, 23 + i * 10, networkRssi.c_str());
         }
+        uiDrawHint("UP/DN pick  OK select  BACK exit");
     }
 
     if (lastNeoPixelColour != "0") {
@@ -385,12 +392,10 @@ void drawAttackScreen(bool fullRedraw = true) {
         //u8g2.drawStr(0, 28, signal.c_str());
         //u8g2.drawStr(50, 28, ch.c_str());
         u8g2.drawStr(0, 30, authStr.c_str());
-        u8g2.drawStr(0, 63, "Press RIGHT to Start");
     } else {
         u8g2.setFont(u8g2_font_5x8_tr);
         u8g2.setDrawColor(0);
-        u8g2.drawBox(0, 60, 128, 8); 
-        u8g2.drawBox(0, 68, 128, 8); 
+        u8g2.drawBox(0, 34, 128, 30);
         u8g2.setDrawColor(1);
     }
 
@@ -399,78 +404,79 @@ void drawAttackScreen(bool fullRedraw = true) {
     float success_rate = (packet_count > 0) ? (float)success_count / packet_count * 100 : 0;
     String success = "Succ: " + String(success_rate, 0) + "%";
 
-    u8g2.drawStr(0, 40, status.c_str());
-    u8g2.drawStr(84, 40, packets.c_str());
-    u8g2.drawStr(0, 50, success.c_str());
-    u8g2.drawStr(0, 63, "Press RIGHT to Start");
+    u8g2.setFont(u8g2_font_5x8_tr);
+    u8g2.drawStr(0, 44, status.c_str());
+    u8g2.drawStr(84, 44, packets.c_str());
+    u8g2.drawStr(0, 54, success.c_str());
+    uiDrawHint(attack_running ? "OK: stop   BACK: network list"
+                              : "OK: start  BACK: network list");
 
     setNeoPixelColour(attack_running ? "orange" : "0");
     u8g2.sendBuffer();
 }
 
+// List view : UP/DOWN pick a network, OK opens it, BACK leaves the tool.
+// Attack view: OK starts/stops the attack, BACK stops it and returns to the list.
 void handleButtons() {
-    unsigned long currentMillis = millis();
+    if (scanning) return;
 
-    if (digitalRead(BTN_PIN_RIGHT) == LOW && currentMillis - lastRightButtonPress >= rightDebounceTime && !scanning) {
-        unsigned long start = micros(); 
-        lastRightButtonPress = currentMillis;
+    switch (uiRead()) {
+        case BTN_UP:
+            if (!isDetailView && currentIndex > 0) {
+                currentIndex--;
+                if (currentIndex < listStartIndex) {
+                    listStartIndex--;
+                }
+                drawScanScreen();
+            }
+            break;
 
-        delayMicroseconds(400);
-        if (digitalRead(BTN_PIN_RIGHT) != LOW) return;
+        case BTN_DOWN:
+            if (!isDetailView && currentIndex < network_count - 1) {
+                currentIndex++;
+                if (currentIndex >= listStartIndex + networks_per_page) {
+                    listStartIndex++;
+                }
+                drawScanScreen();
+            }
+            break;
 
-        if (!isDetailView && network_count > 0) {
-            isDetailView = true;
-            selectedAp = ap_list[currentIndex];
-            selectedChannel = ap_list[currentIndex].primary;
-            drawAttackScreen();
-        } else if (isDetailView) {
-            bool prev_running = attack_running;
-            attack_running = !attack_running; 
-            if (!attack_running) {
+        case BTN_OK:
+            if (!isDetailView && network_count > 0) {
+                isDetailView = true;
+                selectedAp = ap_list[currentIndex];
+                selectedChannel = ap_list[currentIndex].primary;
+                drawAttackScreen();
+            } else if (isDetailView) {
+                bool prev_running = attack_running;
+                attack_running = !attack_running;
+                if (!attack_running) {
+                    last_packet_time = 0;
+                    esp_wifi_stop();
+                } else if (!prev_running) {
+                    esp_wifi_start();
+                }
+                Serial.print("OK pressed, attack: ");
+                Serial.println(attack_running ? "Running" : "Stopped");
+                drawAttackScreen(false);
+            }
+            break;
+
+        case BTN_BACK:
+            if (isDetailView) {
+                attack_running = false;
                 last_packet_time = 0;
-                esp_wifi_stop(); 
-            } else if (!prev_running) {
-                esp_wifi_start(); 
+                esp_wifi_stop();
+                isDetailView = false;
+                drawScanScreen();
+            } else {
+                attack_running = false;
+                uiRequestExit();
             }
-            Serial.print("Right pressed, attack: "); Serial.println(attack_running ? "Running" : "Stopped");
-            drawAttackScreen(false); 
-        }
-        while (digitalRead(BTN_PIN_RIGHT) == LOW); 
-        Serial.print("Toggle latency: "); Serial.println(micros() - start); 
-    }
+            break;
 
-    if (currentMillis - lastButtonPress < debounceTime || scanning) return;
-
-    if (digitalRead(BUTTON_UP_PIN) == LOW) {
-        if (!isDetailView && currentIndex > 0) {
-            currentIndex--;
-            if (currentIndex < listStartIndex) {
-                listStartIndex--;
-            }
-            drawScanScreen();
-        }
-        lastButtonPress = currentMillis;
-        while (digitalRead(BUTTON_UP_PIN) == LOW); 
-    } else if (digitalRead(BUTTON_DOWN_PIN) == LOW) {
-        if (!isDetailView && currentIndex < network_count - 1) {
-            currentIndex++;
-            if (currentIndex >= listStartIndex + networks_per_page) {
-                listStartIndex++;
-            }
-            drawScanScreen();
-        }
-        lastButtonPress = currentMillis;
-        while (digitalRead(BUTTON_DOWN_PIN) == LOW); 
-    } else if (digitalRead(BTN_PIN_LEFT) == LOW) {
-        if (isDetailView) { 
-            attack_running = false;
-            last_packet_time = 0;
-            esp_wifi_stop(); 
-            isDetailView = false;
-            drawScanScreen();
-        }
-        lastButtonPress = currentMillis;
-        while (digitalRead(BTN_PIN_LEFT) == LOW); 
+        default:
+            break;
     }
 }
 
@@ -478,10 +484,12 @@ void deautherSetup() {
     Serial.begin(115200);
     u8g2.begin();
 
-    pinMode(BUTTON_UP_PIN, INPUT_PULLUP);
-    pinMode(BUTTON_DOWN_PIN, INPUT_PULLUP);
-    pinMode(BTN_PIN_RIGHT, INPUT_PULLUP);
-    pinMode(BTN_PIN_LEFT, INPUT_PULLUP);
+    uiButtonsBegin();
+
+    currentIndex = 0;
+    listStartIndex = 0;
+    isDetailView = false;
+    attack_running = false;
 
     setNeoPixelColour("0");
     lastNeoPixelColour = "0";
@@ -520,7 +528,8 @@ void deautherSetup() {
 }
 
 void deautherLoop() {
-    handleButtons(); 
+    handleButtons();
+    if (uiExitRequested()) return;
 
     unsigned long currentMillis = millis();
     if (!isScanComplete && currentMillis - scan_StartTime < scanTimeout) {

@@ -23,16 +23,16 @@ namespace Analyzer {
   byte getregister(byte r) {
     byte c;
     digitalWrite(NRF_CSN_PIN_A, LOW);
-    SPI.transfer(r & 0x1F);
-    c = SPI.transfer(0);
+    hspiBus.transfer(r & 0x1F);
+    c = hspiBus.transfer(0);
     digitalWrite(NRF_CSN_PIN_A, HIGH);
     return c;
   }
 
   void setregister(byte r, byte v) {
     digitalWrite(NRF_CSN_PIN_A, LOW);
-    SPI.transfer((r & 0x1F) | 0x20);
-    SPI.transfer(v);
+    hspiBus.transfer((r & 0x1F) | 0x20);
+    hspiBus.transfer(v);
     digitalWrite(NRF_CSN_PIN_A, HIGH);
   }
 
@@ -76,15 +76,15 @@ namespace Analyzer {
 
   void writeRegister(uint8_t reg, uint8_t value) {
     digitalWrite(NRF_CSN_PIN_A, LOW);
-    SPI.transfer(reg | 0x20);
-    SPI.transfer(value);
+    hspiBus.transfer(reg | 0x20);
+    hspiBus.transfer(value);
     digitalWrite(NRF_CSN_PIN_A, HIGH);
   }
 
   uint8_t readRegister(uint8_t reg) {
     digitalWrite(NRF_CSN_PIN_A, LOW);
-    SPI.transfer(reg & 0x1F);
-    uint8_t result = SPI.transfer(0x00);
+    hspiBus.transfer(reg & 0x1F);
+    uint8_t result = hspiBus.transfer(0x00);
     digitalWrite(NRF_CSN_PIN_A, HIGH);
     return result;
   }
@@ -123,59 +123,48 @@ namespace Analyzer {
     esp_wifi_stop();
     esp_wifi_deinit();
 
-    SPI.begin(18, 19, 23, NRF_CSN_PIN_A);
-    SPI.setDataMode(SPI_MODE0);
-    SPI.setFrequency(10000000);
-    SPI.setBitOrder(MSBFIRST);
+    initSpiBuses();
+    hspiBus.setDataMode(SPI_MODE0);
+    hspiBus.setFrequency(10000000);
+    hspiBus.setBitOrder(MSBFIRST);
 
     digitalWrite(NRF_CSN_PIN_A, HIGH);
     digitalWrite(NRF_CE_PIN_A, LOW);
 
-    RadioA.begin(); 
+    beginRadio(RadioA);
     DIsable();
 
     powerUP();
     writeRegister(NRF24_EN_AA, 0x00);
-    writeRegister(NRF24_RF_SETUP, 0x03);
+    // RF_SETUP 0x0F = 2MBPS | RF_PWR 0dBm (max) | LNA on.
+    // Was 0x03, which is RF_PWR 0b01 = -12dBm and costs receive sensitivity.
+    writeRegister(NRF24_RF_SETUP, 0x0F);
+
+    uiButtonsBegin();
+  }
+
+  // The sweep below blocks for a long time, so BACK is sampled as a level
+  // inside the inner loops rather than waiting for uiRead() at the top.
+  bool backHeld() {
+    if (!uiHeld(BTN_BACK)) return false;
+    Serial.println("BACK pressed, exiting Analyzer");
+    uiRequestExit();
+    return true;
   }
 
   void analyzerLoop() {
-    static unsigned long lastDebounceTimeSelect = 0;
-    const unsigned long debounceDelay = 200; 
-
     ScanChannels();
 
-    if (digitalRead(BUTTON_SELECT_PIN) == LOW) {
-      unsigned long currentMillis = millis();
-      if ((currentMillis - lastDebounceTimeSelect) > debounceDelay) {
-        Serial.println("Select button pressed, exiting Analyzer");
-        lastDebounceTimeSelect = currentMillis;
-        return; 
-      }
-    }
+    if (backHeld()) return;
 
     memset(values, 0, sizeof(uint8_t)*N);
 
     int n = 200;
     while (n--) {
-      if (digitalRead(BUTTON_SELECT_PIN) == LOW) {
-        unsigned long currentMillis = millis();
-        if ((currentMillis - lastDebounceTimeSelect) > debounceDelay) {
-          Serial.println("Select button pressed, exiting Analyzer");
-          lastDebounceTimeSelect = currentMillis;
-          break; 
-        }
-      }
+      if (backHeld()) break;
       int i = N;
       while (i--) {
-        if (digitalRead(BUTTON_SELECT_PIN) == LOW) {
-          unsigned long currentMillis = millis();
-          if ((currentMillis - lastDebounceTimeSelect) > debounceDelay) {
-            Serial.println("Select button pressed, exiting Analyzer");
-            lastDebounceTimeSelect = currentMillis;
-            return; 
-          }
-        }
+        if (backHeld()) return;
         setChannel(i);
         startListening();
         delayMicroseconds(128);
@@ -185,10 +174,8 @@ namespace Analyzer {
         }
       }
     }
-    
-    if (digitalRead(BUTTON_SELECT_PIN) == LOW && (millis() - lastDebounceTimeSelect) > debounceDelay) {
-      return;
-    }
+
+    if (backHeld()) return;
 
     u8g2.clearBuffer();
     int barWidth = SCREEN_WIDTH / N;
@@ -205,6 +192,10 @@ namespace Analyzer {
     u8g2.setFont(u8g2_font_ncenB08_tr);
     u8g2.setCursor(0, 64);
     u8g2.print("1...5...10...25..50...80...128");
+
+    u8g2.setFont(u8g2_font_4x6_tf);
+    u8g2.drawStr(84, 6, "BACK:exit");
+
     u8g2.sendBuffer();
 
     //delay(50);
@@ -232,58 +223,26 @@ namespace ProtoKill {
   const byte zigbee_channels[] = {11, 15, 20, 25};
   const byte nrf24_channels[] = {76, 78, 79};
 
-  volatile bool ChangeRequested = false;
-  volatile bool ChangeRequested1 = false;
-  volatile bool ChangeRequested2 = false;
-
-  unsigned long lastPressTime = 0;
-  const unsigned long debounceDelay = 200;
-
-  void IRAM_ATTR handleButton() {
-    unsigned long currentTime = millis();
-    if (currentTime - lastPressTime > debounceDelay) {
-      ChangeRequested = true;
-      lastPressTime = currentTime;
-    }
-  }
-
-  void IRAM_ATTR handleButton1() {
-    unsigned long currentTime = millis();
-    if (currentTime - lastPressTime > debounceDelay) {
-      ChangeRequested1 = true;
-      lastPressTime = currentTime;
-    }
-  }
-
-  void IRAM_ATTR handleButton2() {
-    unsigned long currentTime = millis();
-    if (currentTime - lastPressTime > debounceDelay) {
-      if (current == DEACTIVE_MODE) {
-        current = ACTIVE_MODE;
-      } else {
-        current = DEACTIVE_MODE;
-      }
-      lastPressTime = currentTime;
-    }
-  }
-
   void configure_Radio(RF24 &radio, const byte *channels, size_t size) {
-    configureNrf(radio); 
-    radio.printPrettyDetails(); 
-    for (size_t i = 0; i < size; i++) {
+    configureNrf(radio);
+    radio.printPrettyDetails();
+    // Soft-start on the first channel (see nrfStartCarrierRamped), then hop
+    // the rest at full power with the PA already biased up.
+    if (size > 0) nrfStartCarrierRamped(radio, RF24_PA_MAX, channels[0]);
+    for (size_t i = 1; i < size; i++) {
       radio.setChannel(channels[i]);
       radio.startConstCarrier(RF24_PA_MAX, channels[i]);
     }
   }
 
   void initialize_MultiMode() {
-    if (RadioA.begin()) {
+    if (beginRadio(RadioA)) {
       configure_Radio(RadioA, channelGroup_1, sizeof(channelGroup_1));
     }
-    if (RadioB.begin()) {
+    if (beginRadio(RadioB)) {
       configure_Radio(RadioB, channelGroup_2, sizeof(channelGroup_2));
     }
-    if (RadioC.begin()) {
+    if (beginRadio(RadioC)) {
       configure_Radio(RadioC, channelGroup_3, sizeof(channelGroup_3));
     }
   }
@@ -301,70 +260,72 @@ namespace ProtoKill {
 
   void update_OLED() {
     u8g2.clearBuffer();
+
+    // These bitmaps are full-screen 128x64 artwork. They used to be drawn at
+    // y=5, which shoved everything down and clipped the bottom five rows off
+    // the panel. Origin is (0,0).
+    u8g2.drawXBMP(0, 0, 128, 64, bitmap_arrow_left);
+    u8g2.drawXBMP(0, 0, 128, 64, bitmap_arrow_right);
+
+    const char* name = "";
+    switch (current_Mode) {
+      case WiFi_MODULE:         u8g2.drawXBMP(0, 0, 128, 64, bitmap_wifi_jammer);      name = "WiFi";         break;
+      case VIDEO_TX_MODULE:     u8g2.drawXBMP(0, 0, 128, 64, bitmap_cctv);             name = "Video TX";     break;
+      case RC_MODULE:           u8g2.drawXBMP(0, 0, 128, 64, bitmap_rc);               name = "RC";           break;
+      case BLE_MODULE:          u8g2.drawXBMP(0, 0, 128, 64, bitmap_ble_jammer);       name = "BLE";          break;
+      case Bluetooth_MODULE:    u8g2.drawXBMP(0, 0, 128, 64, bitmap_bluetooth_jammer); name = "Bluetooth";    break;
+      case USB_WIRELESS_MODULE: u8g2.drawXBMP(0, 0, 128, 64, bitmap_usb);              name = "USB Wireless"; break;
+      case ZIGBEE_MODULE:       u8g2.drawXBMP(0, 0, 128, 64, bitmap_zigbee);           name = "Zigbee";       break;
+      case NRF24_MODULE:        u8g2.drawXBMP(0, 0, 128, 64, bitmap_nrf24);            name = "NRF24";        break;
+    }
+
+    // Inverted title bar: protocol on the left, armed state right-aligned.
+    // Solid background keeps it legible over whatever artwork is behind it.
+    u8g2.drawBox(0, 0, 128, 9);
+    u8g2.setDrawColor(0);
     u8g2.setFont(u8g2_font_5x8_tr);
 
-    u8g2.setCursor(75, 7);
-    if (current == ACTIVE_MODE) {
-      u8g2.print("-ACTIVE-");
-    } else if (current == DEACTIVE_MODE) {
-      u8g2.print("-DEACTIVE-");
-    }
+    char modeBuf[20];
+    snprintf(modeBuf, sizeof(modeBuf), "[%s]", name);
+    u8g2.drawStr(2, 7, modeBuf);
 
-    u8g2.setCursor(0, 12);
-    u8g2.println("-------------------------------");
-    u8g2.setCursor(0, 7);
-    u8g2.print("[");
+    char stateBuf[16];
+    snprintf(stateBuf, sizeof(stateBuf), "<%s>",
+             (current == ACTIVE_MODE) ? "ACTIVE" : "OFF");
+    u8g2.drawStr(126 - u8g2.getStrWidth(stateBuf), 7, stateBuf);
 
-    u8g2.drawXBMP(0, 5, 128, 64, bitmap_arrow_left);
-    u8g2.drawXBMP(0, 5, 128, 64, bitmap_arrow_right);
+    u8g2.setDrawColor(1);
 
-    switch (current_Mode) {
-      case WiFi_MODULE:
-        u8g2.drawXBMP(0, 5, 128, 64, bitmap_wifi_jammer);
-        u8g2.print("WiFi");
-        break;
-      case VIDEO_TX_MODULE:
-        u8g2.drawXBMP(0, 5, 128, 64, bitmap_cctv);
-        u8g2.print("Video TX");
-        break;
-      case RC_MODULE:
-        u8g2.drawXBMP(0, 5, 128, 64, bitmap_rc);
-        u8g2.print("RC");
-        break;
-      case BLE_MODULE:
-        u8g2.drawXBMP(0, 5, 128, 64, bitmap_ble_jammer);
-        u8g2.print("BLE");
-        break;
-      case Bluetooth_MODULE:
-        u8g2.drawXBMP(0, 5, 128, 64, bitmap_bluetooth_jammer);
-        u8g2.print("Bluetooth");
-        break;
-      case USB_WIRELESS_MODULE:
-        u8g2.drawXBMP(0, 5, 128, 64, bitmap_usb);
-        u8g2.print("USB Wireless");
-        break;
-      case ZIGBEE_MODULE:
-        u8g2.drawXBMP(0, 5, 128, 64, bitmap_zigbee);
-        u8g2.print("Zigbee");
-        break;
-      case NRF24_MODULE:
-        u8g2.drawXBMP(0, 5, 128, 64, bitmap_nrf24);
-        u8g2.print("NRF24");
-        break;
-    }
-    u8g2.print("]");
+    // Punch a clear strip for the hint instead of drawing it into the artwork.
+    u8g2.setDrawColor(0);
+    u8g2.drawBox(0, 56, 128, 8);
+    u8g2.setDrawColor(1);
+    uiDrawHint("UP/DN proto  OK arm  BACK exit");
+
     u8g2.sendBuffer();
   }
 
+  // UP/DOWN walk the protocol list, OK arms/disarms, BACK leaves the tool.
   void checkMode() {
-    if (ChangeRequested) {
-      ChangeRequested = false;
-      current_Mode = static_cast<OperationMode>((current_Mode == 0) ? 7 : (current_Mode - 1));
-      update_OLED();
-    } else if (ChangeRequested1) {
-      ChangeRequested1 = false;
-      current_Mode = static_cast<OperationMode>((current_Mode + 1) % 8);
-      update_OLED();
+    switch (uiRead()) {
+      case BTN_UP:
+        current_Mode = static_cast<OperationMode>((current_Mode == 0) ? 7 : (current_Mode - 1));
+        update_OLED();
+        break;
+      case BTN_DOWN:
+        current_Mode = static_cast<OperationMode>((current_Mode + 1) % 8);
+        update_OLED();
+        break;
+      case BTN_OK:
+        current = (current == DEACTIVE_MODE) ? ACTIVE_MODE : DEACTIVE_MODE;
+        break;
+      case BTN_BACK:
+        current = DEACTIVE_MODE;
+        initialize_Radios();
+        uiRequestExit();
+        break;
+      default:
+        break;
     }
   }
 
@@ -376,19 +337,24 @@ namespace ProtoKill {
     esp_wifi_deinit();
     esp_wifi_disconnect();
 
-    pinMode(BTN_PIN_LEFT, INPUT_PULLUP);
-    pinMode(BTN_PIN_RIGHT, INPUT_PULLUP);
-    pinMode(BUTTON_UP_PIN, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(BTN_PIN_LEFT), handleButton, FALLING);
-    attachInterrupt(digitalPinToInterrupt(BTN_PIN_RIGHT), handleButton1, FALLING);
-    attachInterrupt(digitalPinToInterrupt(BUTTON_UP_PIN), handleButton2, FALLING);
+    uiButtonsBegin();
 
+    // Fast startup boots straight in here on its chosen protocol, already
+    // armed; otherwise start idle on whatever protocol was last shown and let
+    // the user arm it with OK. fastStartProto is 1-based so 0 can mean "off".
+    if (fastStartProto != 0) {
+      current_Mode = static_cast<OperationMode>(fastStartProto - 1);
+      current = ACTIVE_MODE;
+    } else {
+      current = DEACTIVE_MODE;
+    }
     initialize_Radios();
     update_OLED();
   }
 
   void blackoutLoop() {
     checkMode();
+    if (uiExitRequested()) return;
 
     static Operation lastMode = DEACTIVE_MODE;
 
@@ -473,16 +439,16 @@ namespace Scanner {
   byte getRegister(byte r) {
     byte c;
     digitalWrite(NRF_CSN_PIN_A, LOW);
-    SPI.transfer(r & 0x1F);
-    c = SPI.transfer(0);
+    hspiBus.transfer(r & 0x1F);
+    c = hspiBus.transfer(0);
     digitalWrite(NRF_CSN_PIN_A, HIGH);
     return c;
   }
 
   void setRegister(byte r, byte v) {
     digitalWrite(NRF_CSN_PIN_A, LOW);
-    SPI.transfer((r & 0x1F) | 0x20);
-    SPI.transfer(v);
+    hspiBus.transfer((r & 0x1F) | 0x20);
+    hspiBus.transfer(v);
     digitalWrite(NRF_CSN_PIN_A, HIGH);
   }
 
@@ -509,6 +475,14 @@ namespace Scanner {
     delayMicroseconds(100);
   }
 
+  // Sampled as a level: the sweep blocks far longer than a button press lasts.
+  bool backHeld() {
+    if (!uiHeld(BTN_BACK)) return false;
+    Serial.println("BACK pressed, exiting Scanner");
+    uiRequestExit();
+    return true;
+  }
+
   void scanChannels(void) {
     disable();
 
@@ -520,18 +494,7 @@ namespace Scanner {
       RadioA.setChannel((128 * i) / CHANNELS); // Use RF24 setChannel
 
       for (int j = 0; j < samplesPerChannel; j++) {
-        // Check Select button in inner loop
-        static unsigned long lastDebounceTimeSelect = 0;
-        const unsigned long debounceDelay = 200;
-        
-        if (digitalRead(BUTTON_SELECT_PIN) == LOW) {
-          unsigned long currentMillis = millis();
-          if ((currentMillis - lastDebounceTimeSelect) > debounceDelay) {
-            Serial.println("Select button pressed, exiting scanChannels");
-            lastDebounceTimeSelect = currentMillis;
-            return; // Exit immediately
-          }
-        }
+        if (backHeld()) return;  // Exit immediately
         setRX();
         delayMicroseconds(100);
         disable();
@@ -586,6 +549,9 @@ namespace Scanner {
     u8g2.print(norm);
     u8g2.print("]");
 
+    u8g2.setFont(u8g2_font_4x6_tf);
+    u8g2.drawStr(84, 8, "BACK:exit");
+
     u8g2.sendBuffer();
   }
 
@@ -617,12 +583,12 @@ namespace Scanner {
       sensorArray[count] = 0;
     }
 
-    SPI.begin(18, 19, 23, NRF_CSN_PIN_A);
-    SPI.setDataMode(SPI_MODE0);
-    SPI.setFrequency(16000000);
-    SPI.setBitOrder(MSBFIRST);
+    initSpiBuses();
+    hspiBus.setDataMode(SPI_MODE0);
+    hspiBus.setFrequency(16000000);
+    hspiBus.setBitOrder(MSBFIRST);
 
-    RadioA.begin(); // Initialize RadioA
+    beginRadio(RadioA); // Initialize RadioA
     disable();
 
     powerUp();
@@ -630,40 +596,20 @@ namespace Scanner {
     setRegister(_NRF24_RF_SETUP, 0x0F);
 
     loadPreviousGraph();
+
+    uiButtonsBegin();
   }
 
   void scannerLoop() {
-    static unsigned long lastDebounceTimeSelect = 0;
-    const unsigned long debounceDelay = 200; // Match Jammer/Analyzer
-
-    // Check Select button before scanning
-    if (digitalRead(BUTTON_SELECT_PIN) == LOW) {
-      unsigned long currentMillis = millis();
-      if ((currentMillis - lastDebounceTimeSelect) > debounceDelay) {
-        Serial.println("Select button pressed, exiting Scanner");
-        lastDebounceTimeSelect = currentMillis;
-        return; // Exit to main loop
-      }
-    }
+    if (backHeld()) return;   // before scanning
 
     scanChannels();
 
-    // Check Select button after scanning
-    if (digitalRead(BUTTON_SELECT_PIN) == LOW) {
-      unsigned long currentMillis = millis();
-      if ((currentMillis - lastDebounceTimeSelect) > debounceDelay) {
-        Serial.println("Select button pressed, exiting Scanner");
-        lastDebounceTimeSelect = currentMillis;
-        return; // Exit to main loop
-      }
-    }
+    if (backHeld()) return;   // after scanning
 
     outputChannels();
 
-    // Skip EEPROM save if Select was pressed
-    if (digitalRead(BUTTON_SELECT_PIN) == LOW && (millis() - lastDebounceTimeSelect) > debounceDelay) {
-      return;
-    }
+    if (backHeld()) return;   // skip the EEPROM save on the way out
 
     if (millis() - lastSaveTime > saveInterval) {
       saveGraphToEEPROM();
@@ -689,18 +635,20 @@ namespace Jammer {
   byte wifiGroup2[] = {5, 6, 7, 8};
   byte wifiGroup3[] = {9, 10, 11, 12};
 
-  uint8_t dataRateIndex = 0;
-  uint8_t paLevelIndex = 0;
+  // Defaults matter: these are applied by setRadioParameters() the moment the
+  // Jammer opens. Index 2 = 2MBPS (widest occupied bandwidth, and matches the
+  // global configureNrf setting); index 3 = PA_MAX (full output + LNA).
+  uint8_t dataRateIndex = 2;   // 2MBPS
+  uint8_t paLevelIndex = 3;    // PA_MAX
 
   int menuIndex = 0;
   const char* menuItems[] = {"Channel:", "PA Level:", "Data Rate:", "Jamming:"};
   const int menuSize = 4;
 
-  unsigned long lastDebounceTimeBT1 = 0;
-  unsigned long lastDebounceTimeBT2 = 0;
-  unsigned long lastDebounceTimeBT3 = 0;
-  unsigned long lastDebounceTimeBT4 = 0;
-  unsigned long debounceDelay = 200;
+  // Rows 0-2 hold a value: OK opens edit mode, then UP/DOWN step it.
+  // Row 3 is an action: OK toggles jamming straight away.
+  bool editing = false;
+  const int actionRow = 3;
 
   void setRadioParameters() {
     switch (dataRateIndex) {
@@ -709,11 +657,14 @@ namespace Jammer {
       case 2: RadioA.setDataRate(RF24_2MBPS); RadioB.setDataRate(RF24_2MBPS); RadioC.setDataRate(RF24_2MBPS); break;
     }
 
+    // The second argument is lnaEnable (RF_SETUP bit 0). It defaults to true in
+    // RF24, but pass it explicitly so a library default change can't silently
+    // drop the LNA and cost us receive sensitivity.
     switch (paLevelIndex) {
-      case 0: RadioA.setPALevel(RF24_PA_MIN); RadioB.setPALevel(RF24_PA_MIN); RadioC.setPALevel(RF24_PA_MIN); break;
-      case 1: RadioA.setPALevel(RF24_PA_LOW); RadioB.setPALevel(RF24_PA_LOW); RadioC.setPALevel(RF24_PA_LOW); break;
-      case 2: RadioA.setPALevel(RF24_PA_HIGH); RadioB.setPALevel(RF24_PA_HIGH); RadioC.setPALevel(RF24_PA_HIGH); break;
-      case 3: RadioA.setPALevel(RF24_PA_MAX); RadioB.setPALevel(RF24_PA_MAX); RadioC.setPALevel(RF24_PA_MAX); break;
+      case 0: RadioA.setPALevel(RF24_PA_MIN, true); RadioB.setPALevel(RF24_PA_MIN, true); RadioC.setPALevel(RF24_PA_MIN, true); break;
+      case 1: RadioA.setPALevel(RF24_PA_LOW, true); RadioB.setPALevel(RF24_PA_LOW, true); RadioC.setPALevel(RF24_PA_LOW, true); break;
+      case 2: RadioA.setPALevel(RF24_PA_HIGH, true); RadioB.setPALevel(RF24_PA_HIGH, true); RadioC.setPALevel(RF24_PA_HIGH, true); break;
+      case 3: RadioA.setPALevel(RF24_PA_MAX, true); RadioB.setPALevel(RF24_PA_MAX, true); RadioC.setPALevel(RF24_PA_MAX, true); break;
     }
   }
 
@@ -744,6 +695,11 @@ namespace Jammer {
       RadioB.powerUp();
       RadioC.powerUp();
       setRadioParameters();
+      // Three PAs coming up together is the worst inrush case on this board,
+      // so walk each one up to the selected level rather than stepping there.
+      nrfRampPALevel(RadioA, paLevelIndex);
+      nrfRampPALevel(RadioB, paLevelIndex);
+      nrfRampPALevel(RadioC, paLevelIndex);
     } else {
       RadioA.stopListening();
       RadioA.powerDown();
@@ -778,53 +734,53 @@ namespace Jammer {
     Serial.println("PA level changed to: " + String(paLevelIndex));
   }
 
-  void navigateUp() {
-    menuIndex = (menuIndex - 1 + menuSize) % menuSize;
-    Serial.println("Navigate Up: menuIndex = " + String(menuIndex));
+  void stepValueNext() {
+    if (menuIndex == 0)      changeChannelNext();
+    else if (menuIndex == 1) changePALevelNext();
+    else if (menuIndex == 2) changeDataRateNext();
   }
 
-  void navigateDown() {
-    menuIndex = (menuIndex + 1) % menuSize;
-    Serial.println("Navigate Down: menuIndex = " + String(menuIndex));
+  void stepValuePrev() {
+    if (menuIndex == 0)      changeChannelPrev();
+    else if (menuIndex == 1) changePALevelPrev();
+    else if (menuIndex == 2) changeDataRatePrev();
   }
 
-  void changeOptionRight() {
-    if (menuIndex == 0) {
-      changeChannelNext();
-    } else if (menuIndex == 1) {
-      changePALevelNext();
-    } else if (menuIndex == 2) {
-      changeDataRateNext();
-    } else if (menuIndex == 3) {
-      toggleJamming();
-    }
-  }
+  // Returns true if anything changed, so callers can redraw.
+  bool handleButtons() {
+    UiButton button = uiRead();
+    if (button == BTN_NONE) return false;
 
-  void changeOptionLeft() {
-    if (menuIndex == 0) {
-      changeChannelPrev();
-    } else if (menuIndex == 1) {
-      changePALevelPrev();
-    } else if (menuIndex == 2) {
-      changeDataRatePrev();
-    } else if (menuIndex == 3) {
-      toggleJamming();
-    }
-  }
-
-  void handleButtonPress(int pin, unsigned long &lastDebounceTime, void (*callback)()) {
-    int reading = digitalRead(pin);
-    if (reading == LOW) {
-      unsigned long currentTime = millis();
-      if ((currentTime - lastDebounceTime) > debounceDelay) {
-        Serial.println("Button press: Pin=" + String(pin) + ", Callback=" +
-                       (pin == BUTTON_UP_PIN ? "navigateUp" :
-                        pin == BTN_PIN_RIGHT ? "changeOptionRight" :
-                        pin == BUTTON_DOWN_PIN ? "navigateDown" : "changeOptionLeft"));
-        callback();
-        lastDebounceTime = currentTime;
+    if (editing) {
+      switch (button) {
+        case BTN_UP:   stepValuePrev(); break;
+        case BTN_DOWN: stepValueNext(); break;
+        case BTN_OK:
+        case BTN_BACK: editing = false; break;
+        default: break;
       }
+      return true;
     }
+
+    switch (button) {
+      case BTN_UP:
+        menuIndex = (menuIndex - 1 + menuSize) % menuSize;
+        break;
+      case BTN_DOWN:
+        menuIndex = (menuIndex + 1) % menuSize;
+        break;
+      case BTN_OK:
+        if (menuIndex == actionRow) toggleJamming();
+        else                        editing = true;
+        break;
+      case BTN_BACK:
+        if (jamming) toggleJamming();   // never leave the radios transmitting
+        uiRequestExit();
+        break;
+      default:
+        break;
+    }
+    return true;
   }
 
 
@@ -836,8 +792,7 @@ namespace Jammer {
                             0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55 };
       for (int i = ((channels * 5) + 1); i < ((channels * 5) + 23); i++) {
         // Check buttons to allow immediate deactivation
-        handleButtonPress(BTN_PIN_RIGHT, lastDebounceTimeBT2, changeOptionRight);
-        handleButtonPress(BTN_PIN_LEFT, lastDebounceTimeBT4, changeOptionLeft);
+        handleButtons();
         if (!jamming) break; // Exit loop if jamming is deactivated
         radioSetChannel(i);
         RadioA.write(&text, sizeof(text));
@@ -846,8 +801,7 @@ namespace Jammer {
       }
     } else if (methode == 2) {
       // Check buttons to allow immediate deactivation
-      handleButtonPress(BTN_PIN_RIGHT, lastDebounceTimeBT2, changeOptionRight);
-      handleButtonPress(BTN_PIN_LEFT, lastDebounceTimeBT4, changeOptionLeft);
+      handleButtons();
       if (!jamming) return; // Exit early if jamming is deactivated
       radioSetChannel(channels);
       int randomIndex = random(0, sizeof(wlanchannels) / sizeof(wlanchannels[0]));
@@ -857,8 +811,7 @@ namespace Jammer {
     } else if (methode == 3) {
       for (int i = 0; i < 22; i++) {
         // Check buttons to allow immediate deactivation
-        handleButtonPress(BTN_PIN_RIGHT, lastDebounceTimeBT2, changeOptionRight);
-        handleButtonPress(BTN_PIN_LEFT, lastDebounceTimeBT4, changeOptionLeft);
+        handleButtons();
         if (!jamming) break; // Exit loop if jamming is deactivated
         int channelA = ((channels * 5) + 1) + i;
         int channelB = ((channels * 5) + 1) + i + 1;
@@ -890,10 +843,11 @@ namespace Jammer {
     int xshift = 5;
     u8g2.setFont(u8g2_font_profont11_tf);
     for (int i = 0; i < menuSize; i++) {
-      int y = (i == 0) ? 10 : (i == 1) ? 25 : (i == 2) ? 40 : 60;
-      if (menuIndex == i) {
+      int y = (i == 0) ? 10 : (i == 1) ? 24 : (i == 2) ? 38 : 52;
+      bool onRow = (menuIndex == i);
+      if (onRow) {
         u8g2.setFont(u8g2_font_5x7_tf);
-        u8g2.drawStr(0 + xshift, y - 1, ">");
+        u8g2.drawStr(0 + xshift, y - 1, editing ? "*" : ">");
         u8g2.setFont(u8g2_font_profont11_tf);
         u8g2.drawStr(8 + xshift, y, menuItems[i]);
       } else {
@@ -903,6 +857,8 @@ namespace Jammer {
 
       u8g2.setCursor(75 + xshift, y);
       u8g2.setFont(u8g2_font_5x7_tf);
+      bool editRow = onRow && editing;
+      if (editRow) u8g2.print("<");
       if (i == 0) {
         u8g2.print("[");
         u8g2.print(channels);
@@ -923,12 +879,17 @@ namespace Jammer {
       } else {
         u8g2.print(jamming ? "Active" : "disable");
       }
+      if (editRow) u8g2.print(">");
     }
+
+    uiDrawHint(editing ? "UP/DN adjust  OK done"
+                       : (menuIndex == actionRow ? "UP/DN move  OK toggle  BACK exit"
+                                                 : "UP/DN move  OK edit  BACK exit"));
     u8g2.sendBuffer();
   }
 
   void configure(RF24 &radio) {
-    radio.begin();
+    beginRadio(radio);
     radio.openWritingPipe(0xFFFFFFFFFF);
     radio.setAutoAck(false);
     radio.stopListening();
@@ -946,12 +907,9 @@ namespace Jammer {
     esp_wifi_stop();
     esp_wifi_deinit();
 
-    pinMode(BUTTON_UP_PIN, INPUT_PULLUP);
-    pinMode(BTN_PIN_RIGHT, INPUT_PULLUP);
-    pinMode(BUTTON_DOWN_PIN, INPUT_PULLUP);
-    pinMode(BTN_PIN_LEFT, INPUT_PULLUP);
+    uiButtonsBegin();
 
-    SPI.begin();
+    initSpiBuses();
 
     configure(RadioA);
     configure(RadioB);
@@ -959,15 +917,16 @@ namespace Jammer {
 
     setRadioParameters();
 
+    menuIndex = 0;
+    editing = false;
+
     u8g2.begin();
     updateDisplay();
   }
 
   void jammerLoop() {
-    handleButtonPress(BUTTON_UP_PIN, lastDebounceTimeBT1, navigateUp);
-    handleButtonPress(BTN_PIN_RIGHT, lastDebounceTimeBT2, changeOptionRight);
-    handleButtonPress(BUTTON_DOWN_PIN, lastDebounceTimeBT3, navigateDown);
-    handleButtonPress(BTN_PIN_LEFT, lastDebounceTimeBT4, changeOptionLeft);
+    handleButtons();
+    if (uiExitRequested()) return;
 
     updateDisplay();
 

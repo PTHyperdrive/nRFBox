@@ -1,0 +1,6 @@
+# Arduino build output (published as release assets instead)
+nRFBox/build/*
+!nRFBox/build/FLASH.md
+
+# Local Claude Code settings
+.claude/

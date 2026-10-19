@@ -41,10 +41,7 @@ void (*menu_loop_functions[NUM_ITEMS])() = {
 
 int item_selected = 0;
 int current_screen = 0;
-unsigned long last_button_time = 0;
-const unsigned long DEBOUNCE_DELAY = 150; 
-const unsigned long POST_PRESS_DELAY = 200; 
-                
+
 void drawMenu() {
   u8g2.clearBuffer();
   if (current_screen != 0) return;
@@ -100,10 +97,15 @@ void drawMenu() {
   u8g2.drawRFrame(highlight_x - 2, highlight_y - 2, 22, 22, 3); 
   u8g2.setDrawColor(1);
 
-  u8g2.setFont(u8g2_font_5x8_tf); 
+  u8g2.setFont(u8g2_font_5x8_tf);
   int name_width = u8g2.getUTF8Width(menu_items[item_selected]);
   int name_x = (128 - name_width) / 2;
-  u8g2.drawStr(name_x, 64, menu_items[item_selected]); 
+  u8g2.drawStr(name_x, 64, menu_items[item_selected]);
+
+  u8g2.setFont(u8g2_font_4x6_tf);
+  char pos[10];
+  snprintf(pos, sizeof(pos), "%d/%d", item_selected + 1, NUM_ITEMS);
+  u8g2.drawStr(0, 64, pos);
 
   u8g2.drawFrame(124, 18, 4, 38); 
   int bar_height = 38 / total_rows;
@@ -120,85 +122,108 @@ void drawMenu() {
   setRadiosNeutralState();
 }
 
-bool readButton(int pin) {
-  if (digitalRead(pin) == LOW && (millis() - last_button_time > DEBOUNCE_DELAY)) {
-    last_button_time = millis();
-    delay(POST_PRESS_DELAY); 
-    return true;
+void openSelectedTool(bool showLoading) {
+  current_screen = 1;
+
+  for (int cycle = 0; showLoading && cycle < 1; cycle++) {
+    for (int i = 0; i < 3; i++) {
+      u8g2.clearBuffer();
+      u8g2.setFont(u8g2_font_6x10_tr);
+      u8g2.drawStr(30, 32, "Loading");
+
+      String dots = "";
+      for (int j = 0; j <= i; j++) {
+        dots += ".";
+        setNeoPixelColour("white");
+      }
+      setNeoPixelColour("0");
+
+      u8g2.drawStr(73, 32, dots.c_str());
+
+      u8g2.sendBuffer();
+      delay(70);
+    }
   }
-  return false;
+
+  // Don't let the press that opened the tool leak into the tool's first frame.
+  uiFlush();
+  uiClearExit();
+
+  menu_functions[item_selected]();
+
+  while (current_screen == 1) {
+    if (menu_loop_functions[item_selected]) {
+      menu_loop_functions[item_selected]();
+    } else {
+      // Static screens (About) have no loop of their own; BACK still leaves.
+      if (uiRead() == BTN_BACK) uiRequestExit();
+    }
+
+    if (uiExitRequested()) {
+      current_screen = 0;
+    }
+  }
+
+  uiFlush();
+  uiClearExit();
+  drawMenu();
 }
+
+// Index of "Proto Kill" in menu_items - where fast startup lands.
+const int PROTO_KILL_ITEM = 3;
 
 void setup() {
   Serial.begin(115200);
   neopixelSetup();
   initAllRadios();
   EEPROM.begin(512);
-  oledBrightness = EEPROM.read(1);
+
+  // Brightness is restored before the first frame either way, so fast startup
+  // never flashes at the wrong contrast.
+  oledBrightness = EEPROM.read(EEPROM_ADDR_BRIGHTNESS);
+  fastStartProto = EEPROM.read(EEPROM_ADDR_FASTSTART);
+  if (fastStartProto >= FAST_START_COUNT) fastStartProto = 0;   // blank/garbage EEPROM
+  showGuide      = (EEPROM.read(EEPROM_ADDR_SHOWGUIDE) != 0);   // 0xFF (blank) -> on
+
   u8g2.begin();
   u8g2.setContrast(oledBrightness);
-  conf();
-  pinMode(BUTTON_UP_PIN, INPUT_PULLUP);
-  pinMode(BUTTON_SELECT_PIN, INPUT_PULLUP);
-  pinMode(BUTTON_DOWN_PIN, INPUT_PULLUP);
-  pinMode(BTN_PIN_RIGHT, INPUT_PULLUP);
-  pinMode(BTN_PIN_LEFT, INPUT_PULLUP);
-  drawMenu();
+  uiButtonsBegin();
+
+  if (fastStartProto != 0) {
+    // Straight into Proto Kill on the chosen protocol, already armed
+    // (see ProtoKill::blackoutSetup). Splash and loading animation are
+    // skipped; BACK still returns to the normal menu.
+    item_selected = PROTO_KILL_ITEM;
+    openSelectedTool(false);
+  } else {
+    conf();
+    drawMenu();
+  }
 }
 
 void loop() {
-  if (current_screen == 0) {
-    const int icons_per_row = 3;
+  if (current_screen != 0) return;
 
-    if (readButton(BTN_PIN_LEFT)) {
-      item_selected = max(0, item_selected - 1);
+  switch (uiRead()) {
+    case BTN_UP:
+      item_selected = (item_selected - 1 + NUM_ITEMS) % NUM_ITEMS;
       drawMenu();
-    }
-    if (readButton(BTN_PIN_RIGHT)) {
-      item_selected = min(NUM_ITEMS - 1, item_selected + 1);
+      break;
+
+    case BTN_DOWN:
+      item_selected = (item_selected + 1) % NUM_ITEMS;
       drawMenu();
-    }
-    if (readButton(BUTTON_UP_PIN)) {
-      item_selected = max(0, item_selected - icons_per_row);
-      drawMenu();
-    }
-    if (readButton(BUTTON_DOWN_PIN)) {
-      item_selected = min(NUM_ITEMS - 1, item_selected + icons_per_row);
-      drawMenu();
-    }
-    if (readButton(BUTTON_SELECT_PIN)) {
-      current_screen = 1;
-      for (int cycle = 0; cycle < 2; cycle++) { 
-        for (int i = 0; i < 3; i++) {
-          u8g2.clearBuffer();
-          u8g2.setFont(u8g2_font_6x10_tr);
-          u8g2.drawStr(30, 32, "Loading");
-    
-          String dots = "";
-          for (int j = 0; j <= i; j++) {
-            dots += ".";
-            setNeoPixelColour("white");
-          }
-          setNeoPixelColour("0");
-          
-          u8g2.drawStr(73, 32, dots.c_str()); 
-    
-          u8g2.sendBuffer();
-          delay(200); 
-        }
-      }
-      menu_functions[item_selected]();
-      
-      while (current_screen == 1) {
-        if (menu_loop_functions[item_selected]) {
-          menu_loop_functions[item_selected]();
-        }
-        if (readButton(BUTTON_SELECT_PIN)) {
-          current_screen = 0;
-          break;
-        }
-      }
-      drawMenu();
-    }
+      break;
+
+    case BTN_OK:
+      openSelectedTool(true);
+      break;
+
+    case BTN_BACK:
+      // Already at the top level; nothing to go back to.
+      break;
+
+    default:
+      break;
   }
 }
